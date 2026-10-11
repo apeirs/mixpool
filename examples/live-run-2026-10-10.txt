@@ -1,0 +1,69 @@
+$ mixpool ip -v
+[   0.00s] nym  socks5 client 'mixpool' pid=3630345 listening 127.0.0.1:1080
+[   0.00s] nym  our mixnet address: 5E5bRaH5mnyjWm2LUhHqkFLfLLNyGxVCSckeqgAQBiRg.BuvTVDNWesXnhGpXANio95DZtGbADZpc57QkVP4nh5Tg@CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.00s] nym  entry gateway: CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.00s] nym  exit (network requester): AfpyBUmhsQknmK9bX6mQ32KSfYPyENXKVoqbNXH2rby8.AUwFak31rbdUejfS2uKv74RJX8NwfVXf3Ji1eZJ91CAa@DXiKYrsx4bnGimcxC3VKpZM8VpayRnE9fsKJZAhgWEYp
+[   0.00s] nym  anonymous replies (SURBs): True
+[   1.79s] dns  api.ipify.org -> 172.67.74.152, 104.26.12.205, 104.26.13.205 (DoH via 1.1.1.1, over mixnet, 1.78s)
+[   1.79s] send GET https://api.ipify.org -> socks5 127.0.0.1:1080 -> mixnet -> 104.26.13.205:443 (attempt 1)
+[   3.61s] recv HTTP 200 OK from api.ipify.org in 1.82s (14 bytes)
+https://api.ipify.org sees this request coming from 193.142.58.124 (a Nym exit gateway)
+$ mixpool fees -v
+[   0.00s] nym  socks5 client 'mixpool' pid=3630345 listening 127.0.0.1:1080
+[   0.01s] nym  our mixnet address: 5E5bRaH5mnyjWm2LUhHqkFLfLLNyGxVCSckeqgAQBiRg.BuvTVDNWesXnhGpXANio95DZtGbADZpc57QkVP4nh5Tg@CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.01s] nym  entry gateway: CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.01s] nym  exit (network requester): AfpyBUmhsQknmK9bX6mQ32KSfYPyENXKVoqbNXH2rby8.AUwFak31rbdUejfS2uKv74RJX8NwfVXf3Ji1eZJ91CAa@DXiKYrsx4bnGimcxC3VKpZM8VpayRnE9fsKJZAhgWEYp
+[   0.01s] nym  anonymous replies (SURBs): True
+[   1.95s] dns  mempool.space -> 103.165.192.208, 103.165.192.202, 103.165.192.203, 103.165.192.204, 103.165.192.205, 103.165.192.206, 103.165.192.207 (DoH via 1.1.1.1, over mixnet, 1.93s)
+[   1.95s] send GET https://mempool.space/api/v1/fees/recommended -> socks5 127.0.0.1:1080 -> mixnet -> 103.165.192.206:443 (attempt 1)
+[   3.48s] recv HTTP 200 OK from mempool.space in 1.53s (74 bytes)
+fastestFee   2 sat/vB
+halfHourFee  1 sat/vB
+hourFee      1 sat/vB
+economyFee   1 sat/vB
+minimumFee   1 sat/vB
+(https://mempool.space/api, via Nym mixnet)
+$ mixpool status b2b8328e5e7af3f17449109b449517cc6641b7a1a525e0c1d019cda078ee03be -v
+[   0.01s] nym  socks5 client 'mixpool' pid=3630345 listening 127.0.0.1:1080
+[   0.01s] nym  our mixnet address: 5E5bRaH5mnyjWm2LUhHqkFLfLLNyGxVCSckeqgAQBiRg.BuvTVDNWesXnhGpXANio95DZtGbADZpc57QkVP4nh5Tg@CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.01s] nym  entry gateway: CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.01s] nym  exit (network requester): AfpyBUmhsQknmK9bX6mQ32KSfYPyENXKVoqbNXH2rby8.AUwFak31rbdUejfS2uKv74RJX8NwfVXf3Ji1eZJ91CAa@DXiKYrsx4bnGimcxC3VKpZM8VpayRnE9fsKJZAhgWEYp
+[   0.01s] nym  anonymous replies (SURBs): True
+[   1.57s] dns  mempool.space -> 103.165.192.207, 103.165.192.208, 103.165.192.202, 103.165.192.203, 103.165.192.204, 103.165.192.205, 103.165.192.206 (DoH via 1.1.1.1, over mixnet, 1.56s)
+[   1.57s] send GET https://mempool.space/api/tx/b2b8328e5e7af3f17449109b449517cc6641b7a1a525e0c1d019cda078ee03be/status -> socks5 127.0.0.1:1080 -> mixnet -> 103.165.192.206:443 (attempt 1)
+[   3.69s] recv HTTP 200 OK from mempool.space in 2.11s (144 bytes)
+confirmed in block 700000 (0000000000000000000590fc0f3eba193a278534220b2b37e9849e1a770ca959)    (https://mempool.space/api, via Nym mixnet)
+$ mixpool broadcast examples/already-confirmed-tx.hex -v
+txid b2b8328e5e7af3f17449109b449517cc6641b7a1a525e0c1d019cda078ee03be  (216 vB, 1 in / 2 out)
+[   0.00s] nym  socks5 client 'mixpool' pid=3630345 listening 127.0.0.1:1080
+[   0.00s] nym  our mixnet address: 5E5bRaH5mnyjWm2LUhHqkFLfLLNyGxVCSckeqgAQBiRg.BuvTVDNWesXnhGpXANio95DZtGbADZpc57QkVP4nh5Tg@CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.00s] nym  entry gateway: CjaGNmprsfeRCqVSCQnq8HEUvtAJ2Pgur8UsvZZevP1d
+[   0.00s] nym  exit (network requester): AfpyBUmhsQknmK9bX6mQ32KSfYPyENXKVoqbNXH2rby8.AUwFak31rbdUejfS2uKv74RJX8NwfVXf3Ji1eZJ91CAa@DXiKYrsx4bnGimcxC3VKpZM8VpayRnE9fsKJZAhgWEYp
+[   0.00s] nym  anonymous replies (SURBs): True
+[   1.77s] dns  mempool.emzy.de -> 178.63.87.163 (DoH via 1.1.1.1, over mixnet, 1.75s)
+[   1.77s] send POST https://mempool.emzy.de/api/tx -> socks5 127.0.0.1:1080 -> mixnet -> 178.63.87.163:443 (attempt 1)
+[   1.89s] dns  blockstream.info -> 23.155.96.128 (DoH via 1.1.1.1, over mixnet, 1.88s)
+[   1.89s] send POST https://blockstream.info/api/tx -> socks5 127.0.0.1:1080 -> mixnet -> 23.155.96.128:443 (attempt 1)
+[   2.02s] dns  mempool.space -> 103.165.192.205, 103.165.192.206, 103.165.192.207, 103.165.192.208, 103.165.192.202, 103.165.192.203, 103.165.192.204 (DoH via 1.1.1.1, over mixnet, 2.00s)
+[   2.02s] send POST https://mempool.space/api/tx -> socks5 127.0.0.1:1080 -> mixnet -> 103.165.192.207:443 (attempt 1)
+[   3.99s] recv HTTP 400 Bad Request from mempool.space in 1.97s (85 bytes)
+[   4.02s] recv HTTP 400 Bad Request from mempool.emzy.de in 2.25s (85 bytes)
+[   4.96s] recv HTTP 400 Bad Request from blockstream.info in 3.07s (64 bytes)
+REJECTED  https://mempool.space/api  HTTP 400  1.97s  sendrawtransaction RPC error: {"code":-25,"message":"bad-txns-inputs-missingorspent"}
+REJECTED  https://blockstream.info/api  HTTP 400  3.07s  sendrawtransaction RPC error -25: bad-txns-inputs-missingorspent
+REJECTED  https://mempool.emzy.de/api  HTTP 400  2.25s  sendrawtransaction RPC error: {"code":-25,"message":"bad-txns-inputs-missingorspent"}
+exit code 2
+$ mixpool tip --network signet
+325815    (https://mempool.space/signet/api, via Nym mixnet)
+$ mixpool broadcast examples/already-confirmed-tx.hex --network signet
+txid b2b8328e5e7af3f17449109b449517cc6641b7a1a525e0c1d019cda078ee03be  (216 vB, 1 in / 2 out)
+REJECTED  https://mempool.space/signet/api  HTTP 400  3.40s  sendrawtransaction RPC error: {"code":-25,"message":"bad-txns-inputs-missingorspent"}
+REJECTED  https://blockstream.info/signet/api  HTTP 400  3.54s  sendrawtransaction RPC error -25: bad-txns-inputs-missingorspent
+exit code 2
+$ mixpool tip --network testnet4 --dns exit
+155977    (https://mempool.space/testnet4/api, via Nym mixnet)
+$ mixpool stop
+stopped
+$ mixpool fees
+error: no SOCKS5 proxy at 127.0.0.1:1080 ([Errno 111] Connection refused). Is nym-socks5-client running? Refusing to fall back to a direct (clearnet) connection.
+exit code 3

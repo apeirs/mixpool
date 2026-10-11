@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mixpool"
+version = "0.1.0"
+description = "Broadcast Bitcoin transactions and query mempool APIs through the Nym mixnet"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "apeir" }]
+dependencies = []
+keywords = ["bitcoin", "nym", "mixnet", "privacy", "esplora", "mempool"]
+
+[project.scripts]
+mixpool = "mixpool.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/apeirs/mixpool"
+
+[tool.setuptools]
+packages = ["mixpool"]

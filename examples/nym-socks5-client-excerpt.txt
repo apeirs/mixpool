@@ -1,0 +1,13 @@
+# nym-socks5-client log lines (same session): every stream mixpool opened, by destination
+2026-10-10T23:25:55.543432Z  INFO common/socks5-client-core/src/socks/client.rs:499: Starting proxy for 1.1.1.1:443 (id: 17667878372613069165)
+2026-10-10T23:25:56.963857Z  INFO common/socks5-client-core/src/socks/client.rs:499: Starting proxy for 103.165.192.203:443 (id: 14580053735072338363)
+2026-10-10T23:25:58.959634Z  INFO common/socks5-client-core/src/socks/client.rs:505: Proxy for 1.1.1.1:443 is finished (id: 17667878372613069165)
+2026-10-10T23:25:59.501803Z  INFO common/socks5-client-core/src/socks/client.rs:499: Starting proxy for 1.1.1.1:443 (id: 12118865602346566999)
+2026-10-10T23:25:59.579933Z  INFO common/socks5-client-core/src/socks/client.rs:499: Starting proxy for 1.1.1.1:443 (id: 9770717519720849946)
+2026-10-10T23:26:01.147138Z  INFO common/socks5-client-core/src/socks/client.rs:499: Starting proxy for 103.165.192.208:443 (id: 10722605507589131432)
+2026-10-10T23:26:01.356071Z  INFO common/socks5-client-core/src/socks/client.rs:505: Proxy for 103.165.192.203:443 is finished (id: 14580053735072338363)
+2026-10-10T23:26:01.593202Z  INFO common/socks5-client-core/src/socks/client.rs:499: Starting proxy for 23.155.96.128:443 (id: 11160031594113188515)
+2026-10-10T23:26:03.135688Z  INFO common/socks5-client-core/src/socks/client.rs:505: Proxy for 1.1.1.1:443 is finished (id: 12118865602346566999)
+2026-10-10T23:26:03.588132Z  INFO common/socks5-client-core/src/socks/client.rs:505: Proxy for 1.1.1.1:443 is finished (id: 9770717519720849946)
+2026-10-10T23:26:05.269597Z  INFO common/socks5-client-core/src/socks/client.rs:499: Starting proxy for mempool.space:443 (id: 12785922009101516047)
+2026-10-10T23:26:06.535442Z  INFO common/socks5-client-core/src/socks/client.rs:505: Proxy for 103.165.192.208:443 is finished (id: 10722605507589131432)
