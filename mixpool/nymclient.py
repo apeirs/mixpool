@@ -28,7 +28,10 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def nym_home() -> Path:
-    return Path(os.environ.get("NYM_HOME", Path.home() / ".nym"))
+    # nym-socks5-client keeps its clients in ~/.nym. The release binary ignores
+    # $NYM_HOME, so mixpool does too, or it would look for the config in a place
+    # the client never wrote to.
+    return Path.home() / ".nym"
 
 
 def config_path(client_id: str) -> Path:

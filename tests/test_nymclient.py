@@ -25,7 +25,7 @@ send_anonymously = true
 
 class PatchConfig(unittest.TestCase):
     def test_adds_missing_field_once(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"NYM_HOME": d}):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d}):
             p = nymclient.config_path("mixpool")
             p.parent.mkdir(parents=True)
             p.write_text(CONFIG)
@@ -36,6 +36,17 @@ class PatchConfig(unittest.TestCase):
             cfg = nymclient.read_config("mixpool")
             self.assertEqual(cfg["core"]["socks5"]["bind_address"], "127.0.0.1:1080")
             self.assertTrue(cfg["storage_paths"]["credential_requests_database"].endswith("credential_requests.db"))
+
+
+class NymHome(unittest.TestCase):
+    # nym-socks5-client ignores $NYM_HOME and always writes under ~/.nym, so
+    # mixpool must look there whatever NYM_HOME says.
+    def test_ignores_nym_home(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(
+            os.environ, {"HOME": d, "NYM_HOME": os.path.join(d, "elsewhere")}
+        ):
+            want = pathlib.Path(d) / ".nym" / "socks5-clients" / "mixpool" / "config" / "config.toml"
+            self.assertEqual(nymclient.config_path("mixpool"), want)
 
 
 if __name__ == "__main__":
