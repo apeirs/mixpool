@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import concurrent.futures
+import random
+import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from . import tx as txmod
 from .mixhttp import MixnetClient, MixnetError
@@ -28,6 +30,10 @@ class BroadcastResult:
     status: Optional[int]
     message: str
     elapsed: Optional[float]
+    # nymdial transport: the exit this POST left from (a fresh mixnet client per POST)
+    exit: Optional[dict] = None
+    # seconds waited before posting (--delay)
+    delay: float = 0.0
 
 
 def endpoints_for(network: str, override: Optional[list[str]] = None) -> list[str]:
@@ -85,43 +91,98 @@ def tx_status(client: MixnetClient, endpoints: list[str], txid: str) -> tuple[st
     return base, r.json()
 
 
-def _broadcast_one(client: MixnetClient, base: str, raw_hex: str, txid: str) -> BroadcastResult:
+def parse_delay(spec: Optional[str]) -> Optional[tuple[float, float]]:
+    """``"30-120"`` -> (30.0, 120.0) seconds; ``"45"`` -> (45.0, 45.0); empty/None -> None."""
+    if spec is None or str(spec).strip() in ("", "0"):
+        return None
+    lo, sep, hi = str(spec).strip().partition("-")
+    try:
+        a, b = float(lo), float(hi if sep else lo)
+    except ValueError:
+        raise ValueError(f"--delay wants MIN-MAX seconds, e.g. 30-300 (got {spec!r})") from None
+    if a < 0 or b < a or b > 86400:
+        raise ValueError(f"--delay wants 0 <= MIN <= MAX <= 86400 seconds (got {spec!r})")
+    return a, b
+
+
+_SYSRANDOM = random.SystemRandom()
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _broadcast_one(
+    client: MixnetClient,
+    base: str,
+    raw_hex: str,
+    txid: str,
+    delay: float = 0.0,
+    sleep: Optional[Callable[[float], None]] = None,
+    note: Optional[Callable[[str], None]] = None,
+) -> BroadcastResult:
+    if delay > 0:
+        if note:
+            note(f"{base}: waiting {delay:.1f}s before posting")
+        (sleep or _sleep)(delay)
     try:
         r = client.post(base + "/tx", raw_hex.encode(), headers={"Content-Type": "text/plain"})
     except MixnetError as e:
-        return BroadcastResult(base, False, None, f"no response over mixnet: {e}", None)
+        return BroadcastResult(base, False, None, f"no response over mixnet: {e}", None, None, delay)
     body = r.text.strip()
     accepted = r.ok and body.lower() == txid
     if r.ok and not accepted:
         body = f"unexpected 2xx body (expected our txid): {body[:200]}"
-    return BroadcastResult(base, accepted, r.status, body[:500], r.elapsed)
+    exit_info = None
+    if r.exit is not None:
+        exit_info = {"node_id": r.exit.node_id, "country": r.exit.country, "ips": r.exit.ips, "label": r.exit.label}
+    return BroadcastResult(base, accepted, r.status, body[:500], r.elapsed, exit_info, delay)
 
 
 def broadcast(
-    client: MixnetClient, endpoints: list[str], raw_hex: str, parallel: bool = True
+    client: MixnetClient,
+    endpoints: list[str],
+    raw_hex: str,
+    parallel: bool = True,
+    delay: Optional[tuple[float, float]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+    rng: Optional[random.Random] = None,
+    note: Optional[Callable[[str], None]] = None,
 ) -> tuple[txmod.TxInfo, list[BroadcastResult]]:
     """Parse ``raw_hex`` locally, then POST it to every endpoint over the mixnet.
 
-    Each endpoint gets its own mixnet stream. Sending the same transaction
-    to several independent backends is harmless and makes propagation more
-    robust if one API is down or filters the exit.
+    Each endpoint gets its own mixnet stream; on the nymdial transport that is
+    a fresh mixnet client (new identity, own exit) per endpoint and per
+    broadcast, never reused. Sending the same transaction to several
+    independent backends is harmless and makes propagation more robust if one
+    API is down or filters the exit.
+
+    ``delay=(lo, hi)``: before posting, each endpoint waits its own random
+    time, drawn uniformly from [lo, hi] seconds with the OS random source, so
+    the moment a transaction appears is decoupled from when it was signed.
     """
     info = txmod.parse(raw_hex)
     clean = txmod.clean_hex(raw_hex).hex()
+    rng = rng or _SYSRANDOM
+    waits = [rng.uniform(*delay) if delay else 0.0 for _ in endpoints]
     if not parallel or len(endpoints) == 1:
-        return info, [_broadcast_one(client, e, clean, info.txid) for e in endpoints]
+        return info, [_broadcast_one(client, e, clean, info.txid, w, sleep, note) for e, w in zip(endpoints, waits)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(endpoints)) as ex:
-        futs = [ex.submit(_broadcast_one, client, e, clean, info.txid) for e in endpoints]
+        futs = [ex.submit(_broadcast_one, client, e, clean, info.txid, w, sleep, note) for e, w in zip(endpoints, waits)]
         return info, [f.result() for f in futs]
 
 
-def exit_ip(client: MixnetClient) -> tuple[str, str]:
-    """Ask a public echo service which IP it sees. Proves we are not on clearnet."""
+def exit_ip(client: MixnetClient, with_exit: bool = False):
+    """Ask a public echo service which IP it sees. Proves we are not on clearnet.
+
+    Returns ``(url, ip)``, or ``(url, ip, exit)`` with ``with_exit=True``, where
+    ``exit`` is the nymdial exit the request left from (None on socks5).
+    """
     for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
         try:
             r = client.get(url)
         except MixnetError:
             continue
         if r.ok:
-            return url, r.text.strip()
+            return (url, r.text.strip(), r.exit) if with_exit else (url, r.text.strip())
     raise MixnetError("no IP echo service answered over the mixnet")

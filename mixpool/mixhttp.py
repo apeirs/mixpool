@@ -1,9 +1,18 @@
-"""HTTP(S) over the Nym mixnet via a local nym-socks5-client.
+"""HTTP(S) over the Nym mixnet.
 
-Every request opens a fresh SOCKS5 stream. Nothing here ever opens a direct
-connection to the destination: if the proxy is down, requests fail.
+Two transports carry the bytes:
 
-DNS: by default (``dns="doh"``) hostnames are resolved with DNS-over-HTTPS
+- ``nymdial`` (the default): every request is a ``nymdial connect`` child
+  process with its own fresh, ephemeral mixnet client and exit (see
+  :mod:`mixpool.nymdial`). nymdial resolves the hostname itself, with
+  DNS-over-HTTPS through its tunnel, so ``dns`` does not apply.
+- ``socks5`` (opt-in): a SOCKS5 stream per request through a running
+  nym-socks5-client.
+
+Nothing here ever opens a direct connection to the destination: if the
+transport is down, requests fail.
+
+DNS on the socks5 transport: by default (``dns="doh"``) hostnames are resolved with DNS-over-HTTPS
 *through the mixnet* (Cloudflare 1.1.1.1, then Google 8.8.8.8, both reached
 by IP literal so no DNS lookup is needed to find them) and the stream is
 opened to an IPv4 address. Reason: some exit gateways have broken IPv6
@@ -24,6 +33,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from . import nymdial as nymdial_mod
 from . import socks
 
 DEFAULT_PROXY = "127.0.0.1:1080"
@@ -51,6 +61,8 @@ class Response:
     connect_host: str
     attempts: int
     headers: dict = field(default_factory=dict)
+    # nymdial transport: the exit the request left from (node id, country, IPs)
+    exit: Optional[nymdial_mod.ExitInfo] = None
 
     @property
     def text(self) -> str:
@@ -64,27 +76,78 @@ class Response:
         return 200 <= self.status < 300
 
 
-class _SocksHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, host, port, connect_host, proxy, timeout):
+class SocksTransport:
+    """Streams through a running nym-socks5-client (SOCKS5 CONNECT)."""
+
+    name = "socks5"
+    resolves_names = False  # we resolve (DoH over the mixnet) or hand the name to the exit
+
+    def __init__(self, proxy: str = DEFAULT_PROXY):
+        self.proxy = socks.parse_proxy(proxy)
+
+    def describe(self) -> str:
+        return f"socks5 {self.proxy[0]}:{self.proxy[1]}"
+
+    def open(self, host: str, port: int, timeout: float):
+        return socks.connect(self.proxy, host, port, timeout), None
+
+
+class NymdialTransport:
+    """A fresh ``nymdial connect`` process (new mixnet identity, new exit) per stream."""
+
+    name = "nymdial"
+    resolves_names = True  # DoH through nymdial's own tunnel
+
+    def __init__(self, dialer: Optional[nymdial_mod.Nymdial] = None, **kw):
+        self.dialer = dialer or nymdial_mod.Nymdial(**kw)
+
+    def describe(self) -> str:
+        return f"nymdial ({self.dialer.binary}), a fresh mixnet client per connection"
+
+    def open(self, host: str, port: int, timeout: float):
+        st = self.dialer.connect(host, port, timeout)
+        return st.sock, st
+
+
+class _MixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host, port, connect_host, transport, timeout):
         super().__init__(host, port, timeout=timeout)
         self._connect_host = connect_host
-        self._proxy = proxy
+        self._transport = transport
+        self.stream = None
 
     def connect(self):
-        self.sock = socks.connect(self._proxy, self._connect_host, self.port, self.timeout)
+        self.sock, self.stream = self._transport.open(self._connect_host, self.port, self.timeout)
+
+    def close(self):
+        super().close()
+        if self.stream is not None:
+            self.stream.close()
 
 
-class _SocksHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, host, port, connect_host, proxy, timeout, context):
+class _MixHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, port, connect_host, transport, timeout, context):
         super().__init__(host, port, timeout=timeout, context=context)
         self._connect_host = connect_host
-        self._proxy = proxy
+        self._transport = transport
+        self.stream = None
 
     def connect(self):
-        raw = socks.connect(self._proxy, self._connect_host, self.port, self.timeout)
+        raw, self.stream = self._transport.open(self._connect_host, self.port, self.timeout)
         # TLS is end-to-end with the destination: the exit gateway only relays
         # ciphertext. SNI/certificate are checked against the real hostname.
-        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except BaseException:
+            raw.close()
+            if self.stream is not None:
+                self.stream.close()
+            raise
+
+    def close(self):
+        super().close()
+        if self.stream is not None:
+            self.stream.close()
 
 
 class MixnetClient:
@@ -92,16 +155,21 @@ class MixnetClient:
 
     def __init__(
         self,
-        proxy: str = DEFAULT_PROXY,
+        proxy: Optional[str] = None,
         timeout: float = 45.0,
         retries: int = 2,
         dns: str = "doh",
         trace: Optional[Callable[[str], None]] = None,
         ssl_context: Optional[ssl.SSLContext] = None,
+        transport=None,
     ):
+        """``transport``: a :class:`NymdialTransport` or :class:`SocksTransport`.
+        Without one, ``proxy`` selects the socks5 transport, and no proxy means nymdial."""
         if dns not in ("doh", "exit"):
             raise ValueError("dns must be 'doh' or 'exit'")
-        self.proxy = socks.parse_proxy(proxy)
+        if transport is None:
+            transport = SocksTransport(proxy) if proxy else NymdialTransport(trace=trace)
+        self.transport = transport
         self.timeout = timeout
         self.retries = retries
         self.dns = dns
@@ -113,9 +181,9 @@ class MixnetClient:
     def _once(self, method, parsed, connect_host, body, headers):
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         if parsed.scheme == "https":
-            conn = _SocksHTTPSConnection(parsed.hostname, port, connect_host, self.proxy, self.timeout, self.ssl_context)
+            conn = _MixHTTPSConnection(parsed.hostname, port, connect_host, self.transport, self.timeout, self.ssl_context)
         elif parsed.scheme == "http":
-            conn = _SocksHTTPConnection(parsed.hostname, port, connect_host, self.proxy, self.timeout)
+            conn = _MixHTTPConnection(parsed.hostname, port, connect_host, self.transport, self.timeout)
         else:
             raise ValueError(f"unsupported scheme {parsed.scheme}")
         path = parsed.path or "/"
@@ -125,7 +193,8 @@ class MixnetClient:
             conn.request(method, path, body=body, headers=headers)
             resp = conn.getresponse()
             data = resp.read()
-            return resp.status, resp.reason, data, dict(resp.getheaders())
+            exit_info = conn.stream.exit if conn.stream is not None else None
+            return resp.status, resp.reason, data, dict(resp.getheaders()), exit_info
         finally:
             conn.close()
 
@@ -146,7 +215,7 @@ class MixnetClient:
             parsed = urllib.parse.urlsplit(f"https://{sni}" + tmpl.format(name=urllib.parse.quote(host)))
             t0 = time.monotonic()
             try:
-                status, _, data, _ = self._once(
+                status, _, data, _, _ = self._once(
                     "GET", parsed, ip, None, dict(DEFAULT_HEADERS, Accept="application/dns-json")
                 )
                 if status != 200:
@@ -170,17 +239,18 @@ class MixnetClient:
         last_exc: Optional[BaseException] = None
         for attempt in range(1, self.retries + 2):
             connect_host = parsed.hostname
-            if self.dns == "doh":
+            if self.dns == "doh" and not self.transport.resolves_names:
                 try:
                     connect_host = random.choice(self._resolve(parsed.hostname))
                 except MixnetError as e:
                     self.trace(f"dns  falling back to exit-side resolution: {e}")
                     connect_host = parsed.hostname
             t0 = time.monotonic()
-            self.trace(f"send {method} {url} -> socks5 {self.proxy[0]}:{self.proxy[1]} -> mixnet -> {connect_host}:{parsed.port or 443} (attempt {attempt})")
+            via = "nymdial -> mixnet (DoH in the tunnel)" if self.transport.name == "nymdial" else f"socks5 {self.transport.proxy[0]}:{self.transport.proxy[1]} -> mixnet"
+            self.trace(f"send {method} {url} -> {via} -> {connect_host}:{parsed.port or 443} (attempt {attempt})")
             try:
-                status, reason, data, rh = self._once(method, parsed, connect_host, body, hdrs)
-            except socks.ProxyUnreachable:
+                status, reason, data, rh, exit_info = self._once(method, parsed, connect_host, body, hdrs)
+            except (socks.ProxyUnreachable, nymdial_mod.NymdialMissing):
                 raise
             except (OSError, http.client.HTTPException) as e:
                 last_exc = e
@@ -188,7 +258,7 @@ class MixnetClient:
                 continue
             elapsed = time.monotonic() - t0
             self.trace(f"recv HTTP {status} {reason} from {parsed.hostname} in {elapsed:.2f}s ({len(data)} bytes)")
-            return Response(url, status, reason, data, elapsed, connect_host, attempt, rh)
+            return Response(url, status, reason, data, elapsed, connect_host, attempt, rh, exit_info)
         raise MixnetError(f"{method} {url} failed after {self.retries + 1} attempts: {last_exc}")
 
     def get(self, url: str, **kw) -> Response:

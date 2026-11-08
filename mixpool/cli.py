@@ -10,8 +10,9 @@ import time
 from dataclasses import asdict
 
 from . import __version__, esplora, nymclient
+from . import nymdial as nymdial_mod
 from . import tx as txmod
-from .mixhttp import MixnetClient, MixnetError
+from .mixhttp import MixnetClient, MixnetError, NymdialTransport, SocksTransport
 from .socks import ProxyUnreachable
 
 _T0 = time.monotonic()
@@ -32,8 +33,26 @@ def _proxy(args) -> str:
         return "127.0.0.1:1080"
 
 
+def _nymdial(args) -> nymdial_mod.Nymdial:
+    extra = []
+    for c in args.country or []:
+        extra += ["--country", c]
+    for e in args.exit or []:
+        extra += ["--exit", e]
+    return nymdial_mod.Nymdial(binary=args.nymdial, args=extra, setup_timeout=args.setup_timeout,
+                               trace=_trace if args.verbose else None)
+
+
+def _transport(args):
+    if args.transport == "socks5":
+        return SocksTransport(_proxy(args))
+    if args.proxy:
+        raise ValueError("--proxy is for the socks5 transport; add --transport socks5 to use a nym-socks5-client")
+    return NymdialTransport(_nymdial(args))
+
+
 def _client(args) -> MixnetClient:
-    return MixnetClient(proxy=_proxy(args), timeout=args.timeout, retries=args.retries, dns=args.dns,
+    return MixnetClient(transport=_transport(args), timeout=args.timeout, retries=args.retries, dns=args.dns,
                         trace=_trace if args.verbose else None)
 
 
@@ -43,6 +62,9 @@ def _out(args, obj, human: str) -> None:
 
 def _header(args) -> None:
     if not args.verbose:
+        return
+    if args.transport == "nymdial":
+        _trace(f"nym  transport: {_transport(args).describe()}; DNS over the mixnet; no clearnet fallback")
         return
     try:
         st = nymclient.status(args.id)
@@ -57,6 +79,16 @@ def _header(args) -> None:
 
 # -- commands -------------------------------------------------------------
 def cmd_exits(args):
+    if args.transport == "nymdial":
+        exits = [e for e in _nymdial(args).exits() if e.get("performance", 0) >= args.min_performance]
+        if args.json:
+            print(json.dumps(exits, indent=2))
+            return 0
+        for e in exits[: args.limit]:
+            ip = next((i for i in e.get("ips", []) if ":" not in i), "")
+            print(f"{e['node_id']:5} {e.get('country') or '--':3} perf={e['performance']:.2f} v{e['version']:8} {ip:16} {e['identity']}")
+        print(f"({len(exits)} IP Packet Router exits nymdial picks from, random order weighted by performance)", file=sys.stderr)
+        return 0
     provs = nymclient.list_exit_providers(min_performance=args.min_performance)
     provs.sort(key=lambda p: -p.performance)
     if args.json:
@@ -110,9 +142,16 @@ def cmd_status(args):
 
 def cmd_ip(args):
     _header(args)
-    url, ip = esplora.exit_ip(_client(args))
-    _out(args, {"service": url, "seen_ip": ip}, f"{url} sees this request coming from {ip} (a Nym exit gateway)")
-    return 0
+    url, ip, ex = esplora.exit_ip(_client(args), with_exit=True)
+    if ex is None:
+        _out(args, {"service": url, "seen_ip": ip}, f"{url} sees this request coming from {ip} (a Nym exit gateway)")
+        return 0
+    match = ip in ex.ips
+    human = f"{url} sees this request coming from {ip}\n" + (
+        f"= the exit nymdial used: Nym {ex.label}" if match else f"WARNING: not an IP of the exit nymdial used ({ex.label}: {', '.join(ex.ips)})"
+    )
+    _out(args, {"service": url, "seen_ip": ip, "exit": asdict(ex), "matches_exit": match}, human)
+    return 0 if match else 4
 
 
 def cmd_tip(args):
@@ -159,20 +198,26 @@ def cmd_decode(args):
 def cmd_broadcast(args):
     raw = _read_tx(args.tx)
     info = txmod.parse(raw)  # fail fast, offline
+    delay = esplora.parse_delay(args.delay)
     endpoints = esplora.endpoints_for(args.network, args.endpoint)
     print(f"txid {info.txid}  ({info.vsize} vB, {info.n_inputs} in / {info.n_outputs} out)", file=sys.stderr)
     if args.dry_run:
         print("dry run: not sending", file=sys.stderr)
         return 0
     _header(args)
-    _, results = esplora.broadcast(_client(args), endpoints, raw, parallel=not args.sequential)
+    if args.transport == "nymdial":
+        print(f"each endpoint gets a fresh mixnet client (new identity, own exit), used for this POST only", file=sys.stderr)
+    note = lambda m: print(m, file=sys.stderr, flush=True)  # noqa: E731
+    _, results = esplora.broadcast(_client(args), endpoints, raw, parallel=not args.sequential,
+                                   delay=delay, note=note)
     if args.json:
         print(json.dumps({"txid": info.txid, "results": [asdict(r) for r in results]}, indent=2))
     else:
         for r in results:
             mark = "ACCEPTED" if r.accepted else "REJECTED" if r.status else "NO REPLY"
             t = f"{r.elapsed:.2f}s" if r.elapsed is not None else "-"
-            print(f"{mark:9} {r.endpoint}  HTTP {r.status}  {t}  {r.message}")
+            via = f"  via {r.exit['label']}" if r.exit else ""
+            print(f"{mark:9} {r.endpoint}  HTTP {r.status}  {t}{via}  {r.message}")
     return 0 if any(r.accepted for r in results) else 2
 
 
@@ -180,31 +225,38 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mixpool", description="Bitcoin transaction broadcast and mempool lookups through the Nym mixnet.")
     p.add_argument("--version", action="version", version=f"mixpool {__version__}")
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--id", default=nymclient.DEFAULT_ID, help="nym-socks5-client id (default: mixpool)")
-    common.add_argument("--proxy", help="SOCKS5 address of a running nym-socks5-client (default: from the client config, else 127.0.0.1:1080)")
+    common.add_argument("--transport", choices=["nymdial", "socks5"], default=os.environ.get("MIXPOOL_TRANSPORT", "nymdial"),
+                        help="nymdial: a fresh in-process mixnet client per connection, via the nymdial binary (default); "
+                             "socks5: a running nym-socks5-client ($MIXPOOL_TRANSPORT)")
+    common.add_argument("--nymdial", metavar="PATH", help="nymdial binary (default: $MIXPOOL_NYMDIAL, else nymdial on PATH)")
+    common.add_argument("--country", action="append", metavar="CC", help="nymdial: only exits in this country (ISO alpha-2, repeatable)")
+    common.add_argument("--exit", action="append", metavar="NODE", help="nymdial: try this exit first (node id or IPR address, repeatable)")
+    common.add_argument("--setup-timeout", type=float, default=180.0, help="nymdial: seconds to get a stream open, exit failover included (default 180)")
+    common.add_argument("--id", default=nymclient.DEFAULT_ID, help="socks5: nym-socks5-client id (default: mixpool)")
+    common.add_argument("--proxy", help="socks5: SOCKS5 address of a running nym-socks5-client (default: from the client config, else 127.0.0.1:1080)")
     common.add_argument("--network", default="mainnet", choices=list(esplora.NETWORKS))
     common.add_argument("--endpoint", action="append", help="Esplora API base URL (repeatable); overrides the network's defaults")
     common.add_argument("--timeout", type=float, default=45.0, help="per-attempt timeout in seconds (default 45)")
     common.add_argument("--retries", type=int, default=2)
-    common.add_argument("--dns", choices=["doh", "exit"], default="doh", help="doh: resolve via DNS-over-HTTPS over the mixnet, connect by IPv4 (default); exit: let the exit gateway resolve")
+    common.add_argument("--dns", choices=["doh", "exit"], default="doh", help="socks5: doh resolves via DNS-over-HTTPS over the mixnet and connects by IPv4 (default); exit lets the exit gateway resolve. nymdial always resolves with DoH through its tunnel")
     common.add_argument("-v", "--verbose", action="store_true", help="trace the mixnet path and timings on stderr")
     common.add_argument("--json", action="store_true")
-    common.add_argument("--binary", help="path to nym-socks5-client")
+    common.add_argument("--binary", help="socks5: path to nym-socks5-client")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("setup", parents=[common], help="init + start a nym-socks5-client on a random active exit gateway")
+    s = sub.add_parser("setup", parents=[common], help="socks5 transport only: init + start a nym-socks5-client on a random active exit gateway")
     s.add_argument("--provider", default="auto", help="network requester address, or 'auto'")
     s.add_argument("--gateway", help="entry gateway identity (default: chosen by nym)")
     s.add_argument("--port", type=int, default=nymclient.DEFAULT_PORT)
     s.add_argument("--no-anonymous", action="store_true", help="don't use reply SURBs (faster; the exit then learns our mixnet address)")
     s.add_argument("--force", action="store_true", help="wipe and re-init the client")
     s.set_defaults(fn=cmd_setup)
-    sub.add_parser("start", parents=[common], help="start the managed nym-socks5-client").set_defaults(fn=cmd_start)
-    sub.add_parser("stop", parents=[common], help="stop it").set_defaults(fn=cmd_stop)
-    sub.add_parser("nym-status", parents=[common], help="show the mixnet client's addresses").set_defaults(fn=cmd_status)
-    e = sub.add_parser("exits", parents=[common], help="list active exit gateways with a network requester (queries nym-api)")
+    sub.add_parser("start", parents=[common], help="socks5 transport only: start the managed nym-socks5-client").set_defaults(fn=cmd_start)
+    sub.add_parser("stop", parents=[common], help="socks5 transport only: stop it").set_defaults(fn=cmd_stop)
+    sub.add_parser("nym-status", parents=[common], help="socks5 transport only: show the mixnet client's addresses").set_defaults(fn=cmd_status)
+    e = sub.add_parser("exits", parents=[common], help="list the exits in use: IP Packet Router exits (nymdial) or network requesters (socks5)")
     e.add_argument("--limit", type=int, default=20)
-    e.add_argument("--min-performance", type=float, default=0.95)
+    e.add_argument("--min-performance", type=float, default=None, help="default 0.95 for socks5, 0 for nymdial (it weights by performance)")
     e.set_defaults(fn=cmd_exits)
     sub.add_parser("ip", parents=[common], help="show the IP that web servers see (should be a Nym exit)").set_defaults(fn=cmd_ip)
     sub.add_parser("tip", parents=[common], help="current block height").set_defaults(fn=cmd_tip)
@@ -219,15 +271,18 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("tx", help="hex, a file containing hex, or - for stdin")
     b.add_argument("--dry-run", action="store_true", help="parse and print the txid, send nothing")
     b.add_argument("--sequential", action="store_true", help="post to endpoints one after another instead of in parallel")
+    b.add_argument("--delay", metavar="MIN-MAX", help="wait a random MIN-MAX seconds (OS randomness, drawn per endpoint) before posting, e.g. 30-300")
     b.set_defaults(fn=cmd_broadcast)
     return p
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "min_performance", 0) is None:
+        args.min_performance = 0.0 if args.transport == "nymdial" else 0.95
     try:
         return args.fn(args)
-    except ProxyUnreachable as e:
+    except (ProxyUnreachable, nymdial_mod.NymdialMissing) as e:
         print(f"error: {e}", file=sys.stderr)
         return 3
     except (MixnetError, txmod.TxError, ValueError, FileNotFoundError, RuntimeError, TimeoutError) as e:
